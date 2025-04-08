@@ -28,6 +28,7 @@ mongoose.connect(process.env.MONGODB_URI || 'mongodb://localhost:27017/referrush
 // Customer schema
 const customerSchema = new mongoose.Schema({
   name: { type: String, required: true },
+  note: { type: String },
   offer: {
     discount: { type: String, required: true },
     cashback: { type: Number, required: true },
@@ -35,8 +36,8 @@ const customerSchema = new mongoose.Schema({
   },
   pointOfContact: {
     name: { type: String },
-    email: { type: String, required: true },
-    phone: { type: String, required: true }
+    email: [{ type: String }],
+    phone: [{ type: String, required: true }]
   },
   touchpoints: {
     referralWelcomePopup: { type: Boolean, default: false },
@@ -101,28 +102,92 @@ const nudgeLogSchema = new mongoose.Schema({
 const NudgeLog = mongoose.model('NudgeLog', nudgeLogSchema);
 
 // Utility function to send email nudges
-const sendEmailNudge = async (customer, touchpoint, subject, customMessage = null) => {
+// const sendEmailNudge = async (customer, touchpoint, subject, customMessage = null, emailOverride) => {
+//   try {
+
+
+//     const htmlMessage = getEmailTemplate(touchpoint, customer, customMessage);
+
+//     // Configure transporter with environment variables in production
+//     const transporter = nodemailer.createTransport({
+//       service: process.env.EMAIL_SERVICE || 'gmail',
+//       auth: {
+//         user: process.env.EMAIL_USER || 'your-email@referrush.com',
+//         pass: process.env.EMAIL_PASSWORD || 'your-app-password'
+//       }
+//     });
+
+//     const recipientEmail = emailOverride || customer.pointOfContact.emails[0];
+
+//     const mailOptions = {
+//       from: process.env.EMAIL_FROM || 'success@referrush.com',
+//       to: recipientEmail,
+//       subject: subject,
+//       html: htmlMessage
+//     };
+
+//     const info = await transporter.sendMail(mailOptions);
+    
+//     // Log successful nudge
+//     await new NudgeLog({
+//       customerId: customer._id,
+//       touchpoint: touchpoint,
+//       channel: 'email',
+//       success: true
+//     }).save();
+    
+//     // Update last nudged timestamp
+//     const updateObj = {};
+//     updateObj[`lastNudged.${touchpoint}`] = new Date();
+
+//     if (touchpoint === 'emailFollowUps') {
+//       // Increment the counter and update the last nudge date
+//       updateObj['touchpoints.email.followUps.nudgeCount'] = Math.min(customer.touchpoints.email.followUps.nudgeCount + 1, 5);
+//       updateObj['touchpoints.email.followUps.lastNudgeDate'] = new Date();
+//     }
+
+//     await Customer.findByIdAndUpdate(customer._id, updateObj);
+    
+//     return { success: true, messageId: info.messageId };
+//   } catch (error) {
+//     console.error('Email error:', error);
+    
+//     // Log failed nudge
+//     await new NudgeLog({
+//       customerId: customer._id,
+//       touchpoint: touchpoint,
+//       channel: 'email',
+//       success: false,
+//       errorMessage: error.message
+//     }).save();
+    
+//     return { success: false, error: error.message };
+//   }
+// };
+const sendEmailNudge = async (customer, touchpoint, subject, customMessage = null, emailOverride) => {
   try {
-
-
     const htmlMessage = getEmailTemplate(touchpoint, customer, customMessage);
-
-    // Configure transporter with environment variables in production
+  
     const transporter = nodemailer.createTransport({
       service: process.env.EMAIL_SERVICE || 'gmail',
+      host: process.env.EMAIL_HOST || 'smtp.gmail.com',
+      port: process.env.EMAIL_PORT || 465,
+      secure: process.env.EMAIL_SECURE !== 'false',
       auth: {
         user: process.env.EMAIL_USER || 'your-email@referrush.com',
         pass: process.env.EMAIL_PASSWORD || 'your-app-password'
       }
     });
-
+    
+    const recipientEmail = emailOverride || customer.pointOfContact.email[0];
+    
     const mailOptions = {
       from: process.env.EMAIL_FROM || 'success@referrush.com',
-      to: customer.pointOfContact.email,
+      to: recipientEmail,
       subject: subject,
       html: htmlMessage
     };
-
+    
     const info = await transporter.sendMail(mailOptions);
     
     // Log successful nudge
@@ -130,19 +195,23 @@ const sendEmailNudge = async (customer, touchpoint, subject, customMessage = nul
       customerId: customer._id,
       touchpoint: touchpoint,
       channel: 'email',
+      recipient: recipientEmail,  // Add recipient information to the log
       success: true
     }).save();
     
     // Update last nudged timestamp
     const updateObj = {};
     updateObj[`lastNudged.${touchpoint}`] = new Date();
-
+    
     if (touchpoint === 'emailFollowUps') {
       // Increment the counter and update the last nudge date
-      updateObj['touchpoints.email.followUps.nudgeCount'] = Math.min(customer.touchpoints.email.followUps.nudgeCount + 1, 5);
+      updateObj['touchpoints.email.followUps.nudgeCount'] = Math.min(
+        (customer.touchpoints?.email?.followUps?.nudgeCount || 0) + 1, 
+        5
+      );
       updateObj['touchpoints.email.followUps.lastNudgeDate'] = new Date();
     }
-
+    
     await Customer.findByIdAndUpdate(customer._id, updateObj);
     
     return { success: true, messageId: info.messageId };
@@ -154,6 +223,7 @@ const sendEmailNudge = async (customer, touchpoint, subject, customMessage = nul
       customerId: customer._id,
       touchpoint: touchpoint,
       channel: 'email',
+      recipient: emailOverride || customer.pointOfContact.emails[0],  // Add recipient information to the failure log
       success: false,
       errorMessage: error.message
     }).save();
@@ -163,7 +233,7 @@ const sendEmailNudge = async (customer, touchpoint, subject, customMessage = nul
 };
 
 // Utility function to send WhatsApp nudges
-const sendWhatsAppNudge = async (customer, touchpoint, customMessage = null) => {
+const sendWhatsAppNudge = async (customer, touchpoint, customMessage = null, phoneOverride) => {
   try {
     const message = getWhatsAppTemplate(touchpoint, customer, customMessage);
     // This would be integrated with a WhatsApp API service (e.g. Twilio, MessageBird)
@@ -172,8 +242,10 @@ const sendWhatsAppNudge = async (customer, touchpoint, customMessage = null) => 
     const whatsappApiUrl = process.env.WHATSAPP_API_URL || 'https://api.whatsapp-provider.com/send';
     const whatsappApiKey = process.env.WHATSAPP_API_KEY || 'your-whatsapp-api-key';
     
+    const recipientPhone = phoneOverride || customer.pointOfContact.phone[0];
+
     const response = await axios.post(whatsappApiUrl, {
-      phone: customer.pointOfContact.phone,
+      phone: recipientPhone,
       message: message,
       apiKey: whatsappApiKey
     });
@@ -219,6 +291,222 @@ const sendWhatsAppNudge = async (customer, touchpoint, customMessage = null) => 
 };
 
 // ROUTES
+app.post('/api/customers/:customerId/contact/email', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { email } = req.body;
+    
+    if (!email) {
+      return res.status(400).json({ success: false, message: 'Email is required' });
+    }
+    
+    // First check if the customer exists
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    
+    // Log the current state for debugging
+    console.log('Before update - Customer:', customer);
+    console.log('Adding email:', email);
+    
+    // Initialize the array if it doesn't exist yet
+    if (!customer.pointOfContact) {
+      customer.pointOfContact = {};
+    }
+    
+    if (!customer.pointOfContact.email) {
+      customer.pointOfContact.email = [];
+    }
+    
+    // Check if email already exists
+    if (!customer.pointOfContact.email.includes(email)) {
+      // Add the new email
+      customer.pointOfContact.email.push(email);
+      customer.lastUpdated = Date.now();
+      
+      // Save the customer
+      await customer.save();
+      
+      console.log('After update - Customer:', customer);
+      
+      return res.status(200).json({ 
+        success: true, 
+        message: 'Email added successfully',
+        emails: customer.pointOfContact.email
+      });
+    } else {
+      // Email already exists
+      return res.status(200).json({ 
+        success: true, 
+        message: 'Email already exists',
+        emails: customer.pointOfContact.email
+      });
+    }
+  } catch (error) {
+    console.error('Error adding email:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+/**
+ * Add phone number(s) to a customer
+ * POST /api/customers/:customerId/contact/phone
+ * Request body: { phones: ['+1234567890', '+0987654321'] }
+ */
+app.post('/api/customers/:customerId/contact/phone', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { phone } = req.body;
+    
+    if (!phone) {
+      return res.status(400).json({ success: false, message: 'Phone is required' });
+    }
+    
+    // First check if the customer exists
+    const customer = await Customer.findById(customerId);
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    
+    // Log the current state for debugging
+    console.log('Before update - Customer:', customer);
+    console.log('Adding phone:', phone);
+    
+    // Initialize the array if it doesn't exist yet
+    if (!customer.pointOfContact) {
+      customer.pointOfContact = {};
+    }
+    
+    if (!customer.pointOfContact.phone) {
+      customer.pointOfContact.phone = [];
+    }
+    
+    // Check if email already exists
+    if (!customer.pointOfContact.phone.includes(phone)) {
+      // Add the new email
+      customer.pointOfContact.phone.push(phone);
+      customer.lastUpdated = Date.now();
+      
+      // Save the customer
+      await customer.save();
+      
+      console.log('After update - Customer:', customer);
+      
+      return res.status(200).json({ 
+        success: true, 
+        message: 'phone added successfully',
+        emails: customer.pointOfContact.phone
+      });
+    } else {
+
+      return res.status(200).json({ 
+        success: true, 
+        message: 'Phone already exists',
+        emails: customer.pointOfContact.phone
+      });
+    }
+  } catch (error) {
+    console.error('Error adding email:', error);
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete email contacts
+app.delete('/api/customers/:customerId/contact/email', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { emails } = req.body;
+    
+    if (!emails || !Array.isArray(emails) || emails.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide an array of emails' });
+    }
+    
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    
+    const updatedCustomer = await Customer.findByIdAndUpdate(
+      customerId,
+      {
+        $pull: { 'pointOfContact.email': { $in: emails } },
+        lastUpdated: Date.now()
+      },
+      { new: true }
+    );
+    
+    res.status(200).json({
+      success: true,
+      message: 'Emails removed successfully',
+      data: updatedCustomer.pointOfContact.email
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+// Delete phone contacts
+app.delete('/api/customers/:customerId/contact/phone', async (req, res) => {
+  try {
+    const { customerId } = req.params;
+    const { phones } = req.body;
+    
+    if (!phones || !Array.isArray(phones) || phones.length === 0) {
+      return res.status(400).json({ success: false, message: 'Please provide an array of phone numbers' });
+    }
+    
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    
+    const updatedCustomer = await Customer.findByIdAndUpdate(
+      customerId,
+      {
+        $pull: { 'pointOfContact.phone': { $in: phones } },
+        lastUpdated: Date.now()
+      },
+      { new: true }
+    );
+    
+    res.status(200).json({
+      success: true,
+      message: 'Phone numbers removed successfully',
+      data: updatedCustomer.pointOfContact.phone
+    });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
+app.post('/api/customers/notes', async (req, res) => {
+  try {
+    const { customerId, note } = req.body;
+    
+    if (!customerId || !note) {
+      return res.status(400).json({ success: false, message: 'Customer ID and note are required' });
+    }
+    
+    const customer = await Customer.findById(customerId);
+    
+    if (!customer) {
+      return res.status(404).json({ success: false, message: 'Customer not found' });
+    }
+    
+    customer.note = note;
+
+    
+    await customer.save();
+    
+    res.status(200).json({ success: true, message: 'Note added successfully', data: customer });
+  } catch (error) {
+    res.status(500).json({ success: false, message: error.message });
+  }
+});
+
 
 // Get all customers with their touchpoint status
 app.get('/api/customers', async (req, res) => {
@@ -255,6 +543,30 @@ app.post('/api/customers', async (req, res) => {
 });
 
 // Update a customer
+
+// app.put('/api/customers/:id', async (req, res) => {
+//   try {
+//     const { touchpoints } = req.body; // Extract touchpoints object from request body
+
+//     if (!touchpoints || typeof touchpoints !== 'object') {
+//       return res.status(400).json({ success: false, error: 'Invalid touchpoints data' });
+//     }
+
+//     const updatedCustomer = await Customer.findByIdAndUpdate(
+//       req.params.id,
+//       { $set: { touchpoints } }, // Update only the touchpoints field
+//       { new: true, runValidators: true }
+//     );
+
+//     if (!updatedCustomer) {
+//       return res.status(404).json({ success: false, error: 'Customer not found' });
+//     }
+
+//     res.json({ success: true, data: updatedCustomer });
+//   } catch (error) {
+//     res.status(400).json({ success: false, error: error.message });
+//   }
+// });
 app.put('/api/customers/:id', async (req, res) => {
   try {
     const updatedCustomer = await Customer.findByIdAndUpdate(
@@ -290,11 +602,21 @@ app.delete('/api/customers/:id', async (req, res) => {
 app.post('/api/nudge/:customerId/:touchpoint/:channel', async (req, res) => {
   try {
     const { customerId, touchpoint, channel } = req.params;
+    const { recipients } = req.body;
     const customer = await Customer.findById(customerId);
     
     if (!customer) {
       return res.status(404).json({ success: false, error: 'Customer not found' });
     }
+
+    // Validate recipients array
+    if (!recipients || !Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ 
+        success: false, 
+        error: 'Please provide at least one recipient' 
+      });
+    }
+
     
     // Convert touchpoint parameter to the correct schema path
     let touchpointPath;
@@ -355,25 +677,73 @@ app.post('/api/nudge/:customerId/:touchpoint/:channel', async (req, res) => {
     if (req.body && req.body.subject) {
       emailSubject = req.body.subject;
     }
+
+    const results = {
+      success: 0,
+      failed: 0,
+      errors: []
+    };
     
+    for (const recipient of recipients) {
+      try {
+
     let result;
     
     if (channel === 'email') {
-      result = await sendEmailNudge(customer, touchpointPath, emailSubject, nudgeMessage);
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+          if (!emailRegex.test(recipient)) {
+            results.failed++;
+            results.errors.push(`Invalid email format: ${recipient}`);
+            continue;
+          }
+      result = await sendEmailNudge(customer, touchpointPath, emailSubject, nudgeMessage, recipient);
     } else if (channel === 'whatsapp') {
-      result = await sendWhatsAppNudge(customer, touchpointPath, nudgeMessage);
+      const phoneRegex = /^\+?[0-9]{10,15}$/;
+          if (!phoneRegex.test(recipient)) {
+            results.failed++;
+            results.errors.push(`Invalid phone format: ${recipient}`);
+            continue;
+          }
+      result = await sendWhatsAppNudge(customer, touchpointPath, nudgeMessage, recipient);
     } else {
-      return res.status(400).json({ success: false, error: 'Invalid channel specified (use email or whatsapp)' });
+      results.failed++;
+      // return res.status(400).json({ success: false, error: 'Invalid channel specified (use email or whatsapp)' });
+      results.errors.push(`Invalid channel specified for recipient: ${recipient}`);
+          continue;
+
     }
     
     if (result.success) {
-      res.json({ success: true, message: `${channel} nudge sent successfully` });
+      // res.json({ success: true, message: `${channel} nudge sent successfully` });
+      results.success++;
     } else {
-      res.status(500).json({ success: false, error: result.error });
+      // res.status(500).json({ success: false, error: result.error });
+      results.failed++;
+          results.errors.push(`Failed to send to ${recipient}: ${result.error}`);
     }
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    // res.status(500).json({ success: false, error: error.message });
+    results.failed++;
+        results.errors.push(`Error processing ${recipient}: ${error.message}`);
   }
+}
+// Return the overall result
+if (results.success > 0) {
+  res.json({ 
+    success: true, 
+    message: `${channel} nudge sent successfully to ${results.success} recipient(s)`,
+    details: results
+  });
+} else {
+  res.status(500).json({ 
+    success: false, 
+    error: 'Failed to send nudges to any recipients',
+    details: results
+  });
+}
+} catch (error) {
+res.status(500).json({ success: false, error: error.message });
+}
 });
 
 // Get all nudge logs for a customer
@@ -559,70 +929,9 @@ const triggerAutomaticNudges = async () => {
         // No subject needed for WhatsApp
       }
     ];
-    
-    // for (const touchpoint of touchpoints) {
-    //   // Only nudge if feature is not enabled
-    //   if (!touchpoint.enabled) {
-    //     // Check if we haven't nudged in the last 7 days or never nudged
-    //     const shouldNudge = !touchpoint.lastNudged || 
-    //                        ((new Date() - new Date(touchpoint.lastNudged)) / (1000 * 60 * 60 * 24) >= 7);
-        
-    //     if (shouldNudge) {
-    //       results.total++;
-          
-    //       try {
-    //         // let channel;
-    //         // if (touchpoint.subject) {
-    //         //   channel = Math.random() > 0.5 ? 'email' : 'whatsapp';
-    //         // } else {
-    //         //   channel = 'whatsapp';
-    //         // }
-    //         // Randomly choose between email and WhatsApp for variety
-    //         const channel = Math.random() > 0.5 ? 'email' : 'whatsapp';
-            
-    //         let nudgeResult;
-    //         if (channel === 'email') {
-    //           nudgeResult = await sendEmailNudge(customer, touchpoint.name, touchpoint.subject, touchpoint.message);
-    //         } else {
-    //           nudgeResult = await sendWhatsAppNudge(customer, touchpoint.name, touchpoint.message);
-    //         }
-            
-    //         if (nudgeResult.success) {
-    //           results.successful++;
-    //           results.details.push({
-    //             customerId: customer._id,
-    //             customerName: customer.name,
-    //             touchpoint: touchpoint.name,
-    //             channel: channel,
-    //             success: true
-    //           });
-    //         } else {
-    //           results.failed++;
-    //           results.details.push({
-    //             customerId: customer._id,
-    //             customerName: customer.name,
-    //             touchpoint: touchpoint.name,
-    //             channel: channel,
-    //             success: false,
-    //             error: nudgeResult.error
-    //           });
-    //         }
-    //       } catch (error) {
-    //         results.failed++;
-    //         results.details.push({
-    //           customerId: customer._id,
-    //           customerName: customer.name,
-    //           touchpoint: touchpoint.name,
-    //           success: false,
-    //           error: error.message
-    //         });
-    //       }
-    //     }
-    //   }
-    // }
+  
 
     for (const tp of touchpoints) {
-      // Skip if feature is enabled
       if (tp.enabled) continue;
 
       let shouldNudge = false;
